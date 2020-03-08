@@ -1,0 +1,6 @@
+\chapter{Conclusions and Future Work}
+The main aim of this study was to achieve high throughput for K-means algorithm on NVIDIA'a GPUs. We were able to achieve around 89\% of the peak throughput on Tesla C1060 GPU. On Fermi-based Tesla C2070 GPU we were able to achieve 75\% of the peak throughput for K-means operation.
+
+Also, we have been able to achieve better efficiency than the currently available GPU implementations for basic K-means algorithm. Our implementation is scalable and does not have any limiting conditions on the input sets it can process. One immediate extension of this would be to use the generic implementation across multiple GPUs. This way we could further reduce the execution time, especially during label assignment.
+
+There have been many extensions of the original K-means algorithm. In our study, we have implemented the basic K-means algorithm. It would be interesting to implement extensions of K-means algorithm using our generic implementation as the base. There are extensions which decrease the number of reduction operations required for computing new centroids. Such extensions might be able to achieve even higher efficiency on GPUs.

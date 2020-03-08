@@ -1,0 +1,214 @@
+\chapter{Finding Nearest Centroid}
+In this chapter we will create a parallel implementation for assigning  data points to their nearest cluster. As explained in Section \ref{sec:findnearest}, the time complexity of this step is linear in terms of the number of data points. Also, calculation of distance for each data point does not depend on any other data point and so processing for all the data points can continue in parallel.
+
+We will pay special attention to the arrangement of data points and centroids inside GPU memory. Also, because of the limited on-chip memory available in a GPU core we need to optimize our implementation such that loading of data points inside on-chip memory is in parallel with distance calculation, so that the cores are never idle.
+
+We will start with an implementation for the special case where the input data points are low-dimensional. We will look at the various possible storage arrangements and their effect on the processing efficiency. On the basis of our observations for the special case of low-dimensional data points, we will finally create a generic implementation which can efficiently parallelize assignment of data points of any dimension and is fully scalable.
+
+We will continue to use the naming convention introduced in Section \ref{sec:findnearest}. For all remaining chapters same naming convention will be used.
+
+\section{Special Case: Low-dimensional Input}
+We will consider the case where the dimension $d$ of input data is small enough to load one complete data point inside the on-chip registers available to a thread. Since, the number of registers available per thread are limited (64 and 128 in C2070 and C1060 respectively), we will only be considering inputs with value of $d$ up to 22.
+
+Each thread will be assigned a data point. It will calculate the distance of the data-point from all the $k$ centroids. The index of the nearest centroid will be stored in an array of length $n$ and will be the final output.
+\subsection{Storage of data points}\label{sec:dataStorage}
+The data points are stored in device memory as it has the maximum capacity. Also, once copied into the device memory the data points will never need to be re-arranged so the cost of copying data from host memory to device memory is one time.
+
+While loading the data points from device memory, threads belonging to the same  warp load the same dimension of successive data points. To ensure that each load by a warp completes in a single transaction the data points are arranged as $[d][n]$ i.e. first dimension of all data points, followed by second dimension of all data points and so on.
+
+Still, if value of $n$ is not a multiple of transaction-width of device memory, a single read by warp might require two transactions. To avoid this we use $cudaMallocPitch$ function to allocate memory for data points with padding, ensuring that first value for each dimension starts at transaction boundary. $cudaMemcpy2D$ is used to copy the data from host into this padded memory.
+
+\subsection{Loading of data points}
+Since a data-point can be completely loaded inside a thread, all the threads load their data points only once at the beginning of the kernel. While declaring the register array inside a thread we can't use a variable $d$ for specifying array length. So instead we create a kernel template with dimension $d$ as template variable. At the time of invocation of kernel, we specify the value $d$ as a constant.
+
+\begin{lstlisting}[morekeywords={blockIndx,blockDim,threadIdx},breaklines=true]
+//Create the kernel template.
+template <int d>
+__global__ void findNearest (int n, float *datapoint, int K, float *membership) {
+	float point[d];
+	// Get the index of the data point to be processed
+	int index = blockIndx.x * blockDim.x + threadIdx.x;
+	// Load the complete data point
+	# pragma unroll 
+	for (int dim=0; dim<d; dim++) {
+		point[dim] = datapoint[n*dim + index];
+	}
+	//Calculate distance from each centroid one by one.
+	for ( int k=0; k<K; k++) {
+		//Get distance from current centroid
+		dist = getDist(k);
+		//If distance is less than minimum distance then update it.
+		if (dist < min) {
+			nearest = k;
+			min = dist;
+		}
+	}
+	//Store index of centroid with minimum distance.
+	membership[index] = nearest;
+}
+// kernel template invocation.
+switch (d) {
+  case 1:  findNearest<1> <<grid_size, block_size>> (..);
+           break;
+  case 2:  findNearest<2> <<grid_size, block_size>> (..);
+           break;
+       .
+       .
+  case 22: findNearest<22> <<grid_size, block_size>> (..);
+           break;
+}			
+\end{lstlisting}
+
+\subsection{Loading of centroids}
+All the threads need to access the same $K$ centroids. This gives an excellent opportunity for reusing the centroid values loaded from device memory. This can be done by loading the centroids in shared memory. Also, all the threads inside a warp access the same dimension of a single centroid. Due to this broadcast access, constant memory can also be used for storing the centroid. We compare both the approaches.
+\subsubsection{Centroid in shared memory}
+We consider the optimum case where value $K$ and $d$ are such that all the centroids can be accommodated in the shared memory at once. All the threads after loading their data points, load all the centroids in shared memory. 
+
+Threads in the same block wait till all the threads finish loading the centroids to ensure that all centroid values have been loaded into shared memory. Once centroids are loaded no more device memory accesses are required and each thread computes the distance from all the centroids by using data point present in its on-chip registers and centroids present in shared memory. Finally, the index of the closest centroid is stored in the membership array in a coalesced manner.
+\subsubsection{Centroid in constant memory}\label{sec:centConstt}
+In the case of access from constant memory, once the data point has been loaded by a thread, it can directly start accessing the centroid values for distance computation. Also, since each thread first computes distance from one centroid before moving onto the next centroid, we store centroids as $[K][d]$ to ensure spatial locality inside constant memory cache.
+\subsubsection{Centroid in device memory}
+For the case of Fermi, data in device memory is also cached (until written to) in on-chip $L1$ cache. So for C2070, we also try accessing centroid directly from device memory instead of loading it into shared memory. In this case also, after loading of data points each thread can directly start computing the distance from centroids. We set the size of the $L1$ cache to 48KB, so that more space is available for caching the centroids.
+
+\subsubsection{Analysis}
+Tables \ref{table:lowC1060} and \ref{table:lowC2070} show the comparison of runtime on C1060 and C2070 for the different approaches discussed above. Second last column in each table shows the time taken to execute the kernel when the centroids are accessed from shared memory but the centroid values are not loaded from device memory.
+
+On comparing the second last and third last columns we can conclude that the time taken in loading of centroids in shared memory from device memory does not have much impact on the runtime.
+
+\begin{table}[htbp]
+\begin{center}
+\begin{tabular}{|p{2cm}|p{1cm}|p{1cm}|p{2.5cm}|p{2.5cm}|p{2.5cm}|}
+\hline
+\multicolumn{1}{|c|}{n} & \multicolumn{1}{c|}{k} & \multicolumn{1}{c|}{d} & \multicolumn{1}{p{2.5cm}|}{Centroid in shared (ms)} & \multicolumn{1}{p{2.5cm}|}{Centroid in shared (no loading) (ms)} & \multicolumn{1}{p{2.5cm}|}{Centroid in constant (ms)} \\ \hline
+1000000 & 100 & 2 & 144.949 & 136.497 & 101.8 \\ \hline
+1000000 & 100 & 4 & 226.485 & 214.307 & 189.069 \\ \hline
+1000000 & 100 & 6 & 310.873 & 295.749 & 256.848 \\ \hline
+1000000 & 100 & 8 & 395.369 & 377.717 & 324.207 \\ \hline
+1000000 & 100 & 10 & 478.628 & 460.491 & 390.703 \\ \hline
+1000000 & 100 & 12 & 563.822 & 542.453 & 457.283 \\ \hline
+1000000 & 100 & 14 & 649.383 & 625.637 & 522.894 \\ \hline
+1000000 & 100 & 16 & 733.757 & 707.335 & 588.915 \\ \hline
+1000000 & 100 & 18 & 819.075 & 790.253 & 654.948 \\ \hline
+1000000 & 100 & 20 & 902.335 & 872.237 & 721.292 \\ \hline
+1000000 & 100 & 22 & 987.537 & 954.896 & 788.082 \\ \hline
+\end{tabular}
+\end{center}
+\caption{Comparison of runtime for 50 iterations of label assignment on C1060 for low-dimensional data with different access locations for centroid.}
+\label{table:lowC1060}
+\end{table}
+
+For C1060, constant memory gives much better performance than shared memory. It also outperforms the case when there is no loading delay in shared memory. This clearly shows that the accesses from the constant cache are much faster than those from the shared memory. Our benchmarking experiments also showed that throughput achieved from shared memory accesses is three-fourth of the throughput achievable by register accesses.
+
+For the last row in Table \ref{table:lowC1060}, shared memory without any load latency achieves 345 GFlop/s whereas constant memory achieves 418 GFlop/s. With a single instruction executing every cycle, C1060 can achieve 311 GFlop/s for single precision floating point operations. During distance calculation, the typical operations are as follows.
+\begin{lstlisting}[breaklines=true]
+distance += (point[i] - centroid[i])*(point[i] - centroid[i]);
+\end{lstlisting}
+
+This can be broken down into one $ADD$ operation to calculate the difference for the $i^{th}$ dimension followed by a $MAD$ operation that squares the difference and adds it into $distance$ variable. Both $ADD$ and $MAD$ operations take one cycle each. So every distance updation takes two cycles and performs three single-precision floating point operations.
+
+C1060 also allows us to perform a $MUL$ operation in parallel with a $MAD$ provided the operands are different. To use the parallel $MUL$ operation, the distance calculation can be modified as:
+\begin{lstlisting}
+temp1 = (point[i] - centroid[i]);        // ADD
+temp2 = (point[i+1] - centroid[i+1]);    // ADD
+distance += temp1*tmp1; temp2 *= temp2;  // MAD + MUL
+distance += temp2;                       // ADD
+\end{lstlisting}
+Here two $distance$ updations are coupled together to use a $MUL$ operation in parallel with $MAD$ operation. But this too takes four cycles for two updations. Hence, maximum possible throughput for distance calculation is $311 * (3/2)$ i.e. 466 GFlop/s. With constant memory, we are able to achieve almost $89\%$ of this peak throughput.
+
+On C2070, the $L1$ cache used for caching accesses from global memory is not able to perform as well as the cache provided by constant memory. Here also, when the centroids are in shared memory, loading of centroids from device memory causes very small overhead, as can be seen by comparing the second last and the third last columns of Table \ref{table:lowC2070}.
+
+
+\begin{table}[htbp]
+\begin{center}
+\begin{tabular}{|p{1.6cm}|p{0.8cm}|p{0.5cm}|p{2.2cm}|p{2.2cm}|p{2.2cm}|p{2.2cm}|}
+\hline
+\multicolumn{1}{|c|}{n} & \multicolumn{1}{c|}{k} & \multicolumn{1}{c|}{d} & \multicolumn{1}{p{2.2cm}|}{Centroid in global (ms)} & \multicolumn{1}{p{2.2cm}|}{Centroid in shared (ms)} & \multicolumn{1}{p{2.2cm}|}{Centroid in shared (no loading) (ms)} & \multicolumn{1}{p{2.2cm}|}{Centroid in constant (ms)} \\ \hline
+1000000 & 100 & 2 & 108.5 & 96.95 & 93.7 & 95.462 \\ \hline
+1000000 & 100 & 4 & 168.3 & 145.3 & 142.9 & 142.994 \\ \hline
+1000000 & 100 & 6 & 227.65 & 195.2 & 189.65 & 190.869 \\ \hline
+1000000 & 100 & 8 & 286.3 & 244.55 & 239.6 & 238.95 \\ \hline
+1000000 & 100 & 10 & 354.95 & 293 & 287.5 & 288.195 \\ \hline
+1000000 & 100 & 12 & 418.1 & 343.15 & 335.5 & 333.514 \\ \hline
+1000000 & 100 & 14 & 479.1 & 392.5 & 385.1 & 386.501 \\ \hline
+1000000 & 100 & 16 & 541.95 & 441.45 & 431.15 & 436.69 \\ \hline
+1000000 & 100 & 18 & 605.6 & 490.55 & 483.3 & 489.173 \\ \hline
+1000000 & 100 & 20 & 669.5 & 540.9 & 530.8 & 532.128 \\ \hline
+1000000 & 100 & 22 & 731.5 & 591.15 & 579.7 & 583.321 \\ \hline
+\end{tabular}
+\end{center}
+\caption{Comparison of runtime for 50 iterations of label assignment on C2070 for low-dimensional data with different access locations for centroid.}
+\label{table:lowC2070}
+\end{table}
+
+Constant memory again performs better than shared memory, but the advantage is much less in comparison to C1060. Three single precision floating point operations every two cycles can give a maximum throughput of around 760 GFlop/s on C2070. We are able to achieve around $75\%$ of it. One major issue with achieving high throughput on Fermi based GPUs is that due to the presence of two warp schedulers higher number of warps are needed to keep both schedulers busy and hide the latency in comparison to C1060.
+
+While we use 256 threads per block for constant memory kernel, we need as many as 768 threads per block to achieve the maximum throughput for shared memory. Since with constant memory we can hide latency with less number of threads, we use constant memory for our generic implementation.
+
+\section{Generic Implementation}
+Based on our observations from the last section we create a generic implementation for label assignment. Once again, each thread is going to be responsible for only one data point. So for the same reasons as mentioned in Section \ref{sec:dataStorage}, data points are stored as $[d][n]$ with padding in device memory. 
+
+Keeping centroids in constant memory ensures that each thread works completely independent of other threads. Also, on-chip constant memory cache is separate from the $L1$ cache present on Fermi. So we will also avoid thrashing in the $L1$ cache. Finally, as observed in last section, less number of threads are needed as compared to shared memory for achieving high throughput with constant memory reads. This gives us the freedom to use more registers per thread to hide latencies of global memory reads.
+
+\subsection{Loading of data points}
+Unlike the low-dimensional case, we cannot assume that every time we will have enough registers to read a data point completely. As a result, a thread would only be able to store some $d_{i}$ dimensions of its data point at any given point. Also, now there won't be a single one-time load of data points from device memory.
+
+Since we will keep on loading dimensions of the data points and calculating the distance simultaneously, we need to ensure that for each dimension loaded there are enough number of compute instructions so as to cover the latency for read of the next dimension. So we load only single dimension at a time and update the distance from maximum number of centroids while the next dimension loads from the device memory.
+
+\subsection{Loading of centroids}
+While previously each thread calculated the distance from one centroid before loading the next centroid, here since the thread has only one dimension of its data point loaded in its registers, it loads the same dimension for some $k$ centroids and updates its distance with them. 
+
+Although we still have broadcast access of centroids, the first $k$ calls are made to load the same dimension of successive $k$ centroids. So we store the centroids in constant memory as $[d][K]$ to achieve higher spatial locality.
+The value $k$ depends on the latency of global reads. We keep it as the template variable this time so that we can specify it as the length for our distance array.
+
+\begin{lstlisting}[morekeywords={dist}]
+//Generic kernel template.
+template <int k>
+__global__ void findNearest (int n, float *datapoint, int K, ..){
+	float point;
+	float dist[k];
+	// Get the index of the data point to be processed
+	int index = blockIndx.x * blockDim.x + threadIdx.x;
+	// Calculate distance from centroids in groups of k.
+	for (int cent=0; cent<K; cent+=k) {
+		//Calculate distance from k centroids.
+		for (int dim=0; dim<d; dim++) {
+			//Load dim dimension of point
+			point = datapoint[n*dim + index];
+			//Update distance from current k centroids
+			updateDist(dim,k,point,dist);
+		}
+		//Update minimum distance and nearest centroid.
+	}
+	//Store index of centroid with minimum distance	
+	membership[index] = nearest;
+}
+\end{lstlisting}
+\subsection{Analysis}
+The major overhead in the generic implementation is the continuous loading of all the dimensions of the data point from device memory while calculating its distance from all the centroids. 
+
+For every dimension read by a thread, it performs $k$ distance updations. By increasing the value of template variable $k$, we can increase the number of compute operations being performed for every read, which should help in hiding the latency of the read from device memory. But for every increase in value of $k$, the kernel requires another register for storing distance from the centroid. Thus, we can only hide the latency up to an extent.
+\begin{table}[htbp]
+\begin{center}
+\begin{tabular}{|p{0.5cm}|p{3cm}|p{3cm}|p{3cm}|}
+\hline
+\multicolumn{1}{|l|}{k} & \multicolumn{1}{p{2.9cm}|}{Data point read from device (ms)} & \multicolumn{1}{p{3cm}|}{Data point not read from device (ms)} & \multicolumn{1}{p{3.5cm}|}{Extra time for reading data point (\%)} \\ \hline
+1 & 40.786 & 19.612 & 107.96 \\ \hline
+2 & 20.528 & 12.855 & 59.69 \\ \hline
+4 & 10.986 & 9.513 & 15.48 \\ \hline
+8 & 8.552 & 7.788 & 9.81 \\ \hline
+12 & 8.109 & 7.46 & 8.70 \\ \hline
+16 & 7.295 & 6.909 & 5.59 \\ \hline
+\end{tabular}
+\end{center}
+\caption{Change in device memory read overhead with increase in distance updations per read on C1060 for n=819200, d=34, K=32 in a single kernel iteration of generic findCluster.}
+\label{table:highC1060latency}
+\end{table}
+
+Table \ref{table:highC1060latency} compares the time spent in assigning labels when data points are read from device memory and when they are not. When for each read dimension only one distance updation was done ($k = 1$), read from device memory took 100\% extra time. On the other hand, as we keep on increasing the value of $k$, extra time spent in reading data points reduces, reaching below 10\% after $k = 8$. 
+Thus by keeping the value of $k$ as 8 or higher, we can ensure that most of the time spent in extra device memory reads for repeated loads of the dimensions of the data points can be masked by parallel compute operations performed during updation of distance.
+\subsection{Scalability}
+Above implementation does not assume any of the input parameters to fall within any range. The data points are processed by each thread independent of all other threads making it scalable to any value of $n$. If value of $n$ is so high that all the data points cannot be accommodated in device memory at once, we can run the kernel multiple times with device memory containing the data points to be processed in the current invocation.
+
+The centroids are processed by each thread in batches of size $k$ at a time, making it scalable for any large value of $k$. If the centroids are too many to accommodate in constant memory at once, we can run the kernel multiple times and calculate distance from all the centroids. The number of computations and loads from device and constant memory woulds still be the same.
+
+Final input parameter is the dimensionality of input data, $d$. Each thread calculates distance of the data point one dimension at a time. As a result, it can work for large values of dimension $d$ also.

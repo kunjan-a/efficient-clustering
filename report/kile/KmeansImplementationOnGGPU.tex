@@ -1,0 +1,180 @@
+\documentclass[a4paper,12pt]{report}
+\usepackage{graphicx}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{fancyhdr}
+\usepackage{cite}
+\usepackage{epsfig}
+%\usepackage{ieeetran}
+%\usepackage{subfigure}
+% 
+%\usepackage{epstopdf}
+\usepackage{amsthm}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{verbatim}
+\usepackage{setspace}
+\usepackage{listings}
+\usepackage{subfig}
+\usepackage{psfrag}
+\usepackage{multicol}
+\usepackage{framed}
+%\begin{comment}
+\usepackage[colorlinks,breaklinks=true]{hyperref}% hyperref should be the last package to be included, and perhaps there  should be one line gap between entries of bibliography 
+\hypersetup{
+	hypertexnames=false,
+	pdftitle={K-means Clustering Algorithm: Efficient Implementation on Graphics Processing Units},
+	pdfauthor={Kunjan Aggarwal},
+	pdfkeywords={},
+%	bookmarksnumbered,
+	pdfstartview={FitH},
+	colorlinks=true,
+	urlcolor=black,
+	linkcolor=black,%: Color for normal internal links
+	anchorcolor=black,%: Color for anchor text.
+	citecolor=black,%: Color for bibliographical citations in text
+	filecolor=black,%: Color for URLs which open local files
+%	pagecolor=blue,%: Color for links to other pages
+}%
+\usepackage[all]{hypcap}
+%\end{comment}
+
+\usepackage{geometry}
+
+\setlength{\topmargin}{-13mm}
+\setlength{\headheight}{6mm}
+\setlength{\headsep}{7mm}
+\setlength{\textheight}{245mm}
+%\setlength{\oddsidemargin}{0.37in}
+\newpage
+%\setlength{\evensidemargin}{0in}
+\setlength{\textwidth}{150mm}
+\setlength{\marginparwidth}{0.5in}
+\renewcommand{\baselinestretch}{1.15}
+\pagestyle{fancy}
+\fancyhead{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\setlength\fboxsep{1pt}
+\setlength\fboxrule{0.25pt}
+%\theoremstyle{definition}
+\newtheorem{mydef}{Definition}[chapter]
+
+\renewcommand\lstlistingname{Program}%                     default is Listing
+\renewcommand\lstlistlistingname{List of Programs}%        default is Listings
+\addtolength{\evensidemargin}{-.875in}
+\pagenumbering{roman}
+\fancyfoot[CO]{\thepage}
+    
+%setting for algorithm environment
+\algsetup{
+	linenosize=\small,
+	linenodelimiter=.
+}
+
+\lstset{
+language=C,                             % Code langugage
+basicstyle=\small,                   % Code font, Examples: \footnotesize
+keywordstyle=\bf,        				% Keywords font ('*' = uppercase)
+commentstyle=\it,              			% Comments font
+backgroundcolor=\color{white}, 			% Choose background color
+frame=single,                             % A frame around the code
+tabsize=2,                              % Default tab size
+captionpos=b,                           % Caption-position = bottom
+breaklines=false,                        % Automatic line breaking?
+breakatwhitespace=false,                % Automatic breaks only at whitespace?
+showspaces=false,                       % Dont make spaces visible
+showtabs=false,                         % Dont make tabls visible
+morekeywords={dim3,template,__device__,__global__},  				% CUDA specific keywords
+}
+
+
+
+\usepackage{color}
+%\usepackage{ulem}
+
+\definecolor{gray}{rgb}{0.5,0.5,0.5}
+\definecolor{light-gray}{gray}{0.95}
+\newcommand{\sout}[1]{}
+%\newcommand{\sout}[1]{\textcolor{gray}{#1}}
+\newcommand{\remSection}[1]{}
+\newcommand{\add}[1]{\textcolor{blue}{#1}}
+%\newcommand{\add}[1]{#1}
+%\newcommand{\rem}[1]{\textcolor{red}{}}
+\newcommand{\rem}[1]{\textcolor{red}{#1}}
+%\newcommand{\sbrem}[1]{\textcolor{magenta}{#1}}
+\newcommand{\sbrem}[1]{#1}
+
+\newtheorem{lemma}{lemma}
+\newcommand{\groupSymbol}{g} %refering single group
+\newcommand{\groupFn}{\Gamma} % groupFn(v) refers to dependent-group of node v
+\newcommand{\rep}{rep} %representative
+\newcommand{\pseudorep}{\eta} %pseudorepresentative
+\newcommand{\W}{wt}
+\newcommand{\PertRange}{\Re} %range
+\renewcommand{\algorithmicforall}{\textbf{for each}}
+\renewcommand{\algorithmicrequire}{\textbf{Input}}
+\renewcommand{\algorithmicensure}{\textbf{Output}}
+%\newtheorem{mydef}{Definition}
+
+
+%\renewcommand{\textfraction}{0.05}
+%\renewcommand{\topfraction}{0.9}
+%\renewcommand{\bottomfraction}{0.9}
+\renewcommand{\floatpagefraction}{.95}
+
+\title{Efficient Implementation of K-Means clustering algorithm on Graphic Processor Unit}
+
+\begin{document}
+\begin{doublespacing}
+\input{Preamble/Cover}	
+\newpage
+\input{Preamble/Title}	
+\newpage
+\pagenumbering{roman}
+\addcontentsline{toc}{chapter}{Certificate}
+\input{Preamble/Certificate}	
+\newpage
+\addcontentsline{toc}{chapter}{Acknowledgments}
+\input{Preamble/Acknowledgment}
+\newpage
+\addcontentsline{toc}{chapter}{Abstract}
+\input{Preamble/Abstract}
+\newpage
+\addcontentsline{toc}{chapter}{Contents}
+\tableofcontents
+\newpage
+\addcontentsline{toc}{chapter}{List of Figures}
+\listoffigures
+\newpage
+\addcontentsline{toc}{chapter}{List of Tables}
+\listoftables
+
+\newpage
+\pagenumbering{arabic}
+\fancyhead[RO]{\thepage}
+\fancyhead[LO]{\slshape \leftmark}
+\fancyfoot[CO]{}
+\renewcommand{\headrulewidth}{0.5pt}
+\noindent
+\input{InputFiles/Introduction.tex}
+\input{InputFiles/K-means_Clustering_Algorithm.tex}
+\input{InputFiles/CUDA.tex}
+\input{InputFiles/Find_nearest.tex}
+\input{InputFiles/Compute_new.tex}
+\input{InputFiles/Experiment.tex}
+\input{InputFiles/Conclusion.tex}
+
+\end{doublespacing}
+
+\begin{singlespace}
+\bibliographystyle{plain}
+\newpage
+\addcontentsline{toc}{chapter}{Bibliography}
+\bibliography{references}
+
+\end{singlespace}
+
+
+\end{document}
